@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = "7989310634:AAEUN8LPqDYQaaQyzvkeo75p-XeJ29VwfjQ"
+API_TOKEN = "API_TOKEN"
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
