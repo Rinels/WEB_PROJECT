@@ -82,18 +82,17 @@ def create_main_menu():
 def create_task_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏ Редактировать", callback_data=f"edit_{list_id}_{task_id}")],
-        [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="⏰ Установить напоминание", callback_data=f"remind_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="🔄 Изменить статус", callback_data=f"status_{list_id}_{task_id}")],
-        [InlineKeyboardButton(text="✅ Завершить", callback_data=f"done_{list_id}_{task_id}")]
+        [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")]
     ])
 
 def create_status_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Не начата", callback_data=f"set_status_{list_id}_{task_id}_not_started")],
         [InlineKeyboardButton(text="В процессе", callback_data=f"set_status_{list_id}_{task_id}_in_progress")],
-        [InlineKeyboardButton(text="Выполнена", callback_data=f"set_status_{list_id}_{task_id}_completed")]
-    ], resize_keyboard=True)  # Добавляем параметр resize_keyboard
+        [InlineKeyboardButton(text="Выполнена", callback_data=f"done_{list_id}_{task_id}")]
+    ], resize_keyboard=True)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -155,7 +154,7 @@ async def list_tasks(message: Message):
         task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
 
         if task["reminder_time"]:
-            task_text += f"\nНапоминание: {task["reminder_time"]}"
+            task_text += f"\nНапоминание: {task['reminder_time']}"
 
         if task["reminded"]:
             task_text += " ✅"
@@ -271,6 +270,18 @@ async def mark_done(callback: types.CallbackQuery):
     _, list_id, task_id = callback.data.split("_")
     task_id = int(task_id)
 
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да", callback_data=f"confirm_done_{list_id}_{task_id}"),
+         InlineKeyboardButton(text="Нет", callback_data=f"cancel_done_{list_id}_{task_id}")]
+    ])
+    await callback.message.answer("Вы уверены, что хотите завершить эту задачу?", reply_markup=keyboard)
+
+
+@dp.callback_query(lambda call: call.data.startswith("confirm_done_"))
+async def process_confirm_done(callback: types.CallbackQuery):
+    _, _, list_id, task_id = callback.data.split("_")
+    task_id = int(task_id)
+
     if list_id in to_do_lists:
         tasks = to_do_lists[list_id].get("tasks", [])
         if 0 <= task_id < len(tasks):
@@ -282,9 +293,15 @@ async def mark_done(callback: types.CallbackQuery):
 
             await callback.message.edit_text(f"✅ Задача завершена: {task['task']}")
         else:
-            await callback.message.answer("❌ Задача не найдена.")
+            await callback.answer("❌ Задача не найдена.")
     else:
-        await callback.message.answer("❌ Список задач не найден.")
+        await callback.answer("❌ Список задач не найден.")
+
+
+@dp.callback_query(lambda call: call.data.startswith("cancel_done_"))
+async def process_cancel_done(callback: types.CallbackQuery):
+    await callback.message.edit_text("Завершение задачи отменено.")
+
 
 @dp.message(lambda msg: msg.text == "✅ Выполненные")
 async def show_completed(message: Message):
