@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = "API TOKEN"
+API_TOKEN = ""
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -94,6 +94,7 @@ def create_status_keyboard(list_id, task_id):
         [InlineKeyboardButton(text="Выполнена", callback_data=f"done_{list_id}_{task_id}")]
     ], resize_keyboard=True)
 
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = str(message.from_user.id)
@@ -141,16 +142,24 @@ async def process_task_description(message: Message, state: FSMContext):
     await message.answer(f"✅ Задача добавлена: {title}", reply_markup=create_main_menu())
     await state.clear()
 
+
 @dp.message(lambda msg: msg.text == "📋 Список")
 async def list_tasks(message: Message):
     user_id = str(message.from_user.id)
     list_id = user_to_list.get(user_id)
-    if not to_do_lists[list_id]["tasks"]:
+    if list_id not in to_do_lists or not to_do_lists[list_id]["tasks"]:
         await message.answer("📭 Список пуст или не найден. Добавьте новую задачу.", reply_markup=create_main_menu())
         return
 
     tasks = to_do_lists[list_id].get("tasks", [])
-    for idx, task in enumerate(tasks):
+
+    sorted_tasks = sorted(tasks, key=lambda x: (
+        0 if x["status"] == STATUS_OPTIONS["in_progress"] else 1
+    ))
+
+    for task in sorted_tasks:
+        original_idx = tasks.index(task)
+
         task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
 
         if task["reminder_time"]:
@@ -164,7 +173,7 @@ async def list_tasks(message: Message):
 
         await message.answer(
             task_text,
-            reply_markup=create_task_keyboard(list_id, idx)
+            reply_markup=create_task_keyboard(list_id, original_idx)
         )
 
 @dp.callback_query(lambda call: call.data.startswith("edit_"))
@@ -176,6 +185,7 @@ async def edit_task(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(list_id=list_id, task_id=int(task_id))
 
     await callback.message.answer("Введите новый текст задачи:")
+
 
 @dp.message(ToDoStates.editing_task)
 async def process_edit_task(message: Message, state: FSMContext):
@@ -199,6 +209,7 @@ async def process_edit_task(message: Message, state: FSMContext):
         await message.answer("❌ Задача не найдена. Попробуйте снова.", reply_markup=create_main_menu())
     await state.clear()
 
+
 @dp.callback_query(lambda call: call.data.startswith("remind_"))
 async def set_reminder(callback_query: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback_query.data.split("_")
@@ -208,6 +219,7 @@ async def set_reminder(callback_query: types.CallbackQuery, state: FSMContext):
     await callback_query.message.answer("Введите время для напоминания в формате `DD-MM-YYYY HH:MM`:")
 
     await state.set_state(ToDoStates.setting_reminder)
+
 
 @dp.message(ToDoStates.setting_reminder)
 async def process_reminder_time(message: Message, state: FSMContext):
@@ -229,6 +241,7 @@ async def process_reminder_time(message: Message, state: FSMContext):
     await message.answer(f"✅ Напоминание для задачи \"{task['task']}\" установлено на {reminder_time}.", reply_markup=create_main_menu())
     await state.clear()
 
+
 @dp.callback_query(lambda call: call.data.startswith("status_"))
 async def change_status(callback: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback.data.split("_")
@@ -247,6 +260,7 @@ async def change_status(callback: types.CallbackQuery, state: FSMContext):
     else:
         await callback.message.answer("❌ Список задач не найден.")
 
+
 @dp.callback_query(lambda call: call.data.startswith("set_status_"))
 async def set_status(callback: types.CallbackQuery):
     _, _, list_id, task_id, status_key = callback.data.split("_", 4)
@@ -264,6 +278,7 @@ async def set_status(callback: types.CallbackQuery):
             await callback.message.answer("❌ Задача не найдена.")
     else:
         await callback.message.answer("❌ Некорректный статус.")
+
 
 @dp.callback_query(lambda call: call.data.startswith("done_"))
 async def mark_done(callback: types.CallbackQuery):
@@ -333,10 +348,11 @@ async def confirm_delete_task(callback: types.CallbackQuery):
     _, _, list_id, task_id = callback.data.split("_")
     task_id = int(task_id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_{list_id}_{task_id}"),
-         InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")]
+        [InlineKeyboardButton(text="Да", callback_data=f"confirm_delete_{list_id}_{task_id}"),
+         InlineKeyboardButton(text="Нет", callback_data="cancel_delete")]
     ])
     await callback.message.answer("Вы уверены, что хотите удалить эту задачу?", reply_markup=keyboard)
+
 
 @dp.callback_query(lambda call: call.data.startswith("confirm_delete_"))
 async def process_delete_task(callback: types.CallbackQuery):
@@ -353,6 +369,7 @@ async def process_delete_task(callback: types.CallbackQuery):
     else:
         await callback.message.answer("❌ Список задач не найден.")
 
+
 @dp.callback_query(lambda call: call.data == "cancel_delete")
 async def cancel_delete_task(callback: types.CallbackQuery):
     await callback.message.edit_text("Удаление отменено.")
@@ -360,7 +377,7 @@ async def cancel_delete_task(callback: types.CallbackQuery):
 load_tasks()
 
 async def main():
-    asyncio.create_task(reminder_check())  # Запускаем проверку напоминаний
+    asyncio.create_task(reminder_check())
     try:
         await dp.start_polling(bot)
     finally:
