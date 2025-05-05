@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = ""
+API_TOKEN = "7989310634:AAEUN8LPqDYQaaQyzvkeo75p-XeJ29VwfjQ"
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -17,6 +17,7 @@ class ToDoStates(StatesGroup):
     adding_title = State()
     adding_description = State()
     editing_task = State()
+    editing_description = State()
     changing_status = State()
     deleting_task = State()
     setting_reminder = State()
@@ -81,7 +82,8 @@ def create_main_menu():
 
 def create_task_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏ Редактировать", callback_data=f"edit_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="✏ Редактировать название", callback_data=f"edit_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="📝 Редактировать описание", callback_data=f"edit_desc_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="⏰ Установить напоминание", callback_data=f"remind_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="🔄 Изменить статус", callback_data=f"status_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")]
@@ -176,15 +178,22 @@ async def list_tasks(message: Message):
             reply_markup=create_task_keyboard(list_id, original_idx)
         )
 
+
 @dp.callback_query(lambda call: call.data.startswith("edit_"))
 async def edit_task(callback: types.CallbackQuery, state: FSMContext):
-    _, list_id, task_id = callback.data.split("_")
+    parts = callback.data.split("_")
 
-    await state.set_state(ToDoStates.editing_task)
+    if len(parts) == 3:
+        _, list_id, task_id = parts
+        await state.set_state(ToDoStates.editing_task)
+        await state.update_data(list_id=list_id, task_id=int(task_id))
+        await callback.message.answer("Введите новое название задачи:")
 
-    await state.update_data(list_id=list_id, task_id=int(task_id))
-
-    await callback.message.answer("Введите новый текст задачи:")
+    elif len(parts) == 4 and parts[1] == "desc":
+        _, _, list_id, task_id = parts
+        await state.set_state(ToDoStates.editing_description)
+        await state.update_data(list_id=list_id, task_id=int(task_id))
+        await callback.message.answer("Введите новое описание задачи (или /delete чтобы удалить описание):")
 
 
 @dp.message(ToDoStates.editing_task)
@@ -195,7 +204,7 @@ async def process_edit_task(message: Message, state: FSMContext):
     new_task_text = message.text.strip()
 
     if list_id not in to_do_lists:
-        await message.answer("❌ Список задач не найден. Пожалуйста, перезапустите бота командой /start.", reply_markup=create_main_menu())
+        await message.answer("❌ Список задач не найден.", reply_markup=create_main_menu())
         await state.clear()
         return
 
@@ -203,10 +212,31 @@ async def process_edit_task(message: Message, state: FSMContext):
     if 0 <= task_id < len(tasks):
         to_do_lists[list_id]["tasks"][task_id]["task"] = new_task_text
         save_tasks()
-
-        await message.answer("✅ Задача обновлена.", reply_markup=create_main_menu())
+        await message.answer("✅ Название задачи обновлено.", reply_markup=create_main_menu())
     else:
-        await message.answer("❌ Задача не найдена. Попробуйте снова.", reply_markup=create_main_menu())
+        await message.answer("❌ Задача не найдена.", reply_markup=create_main_menu())
+    await state.clear()
+
+
+@dp.message(ToDoStates.editing_description)
+async def process_edit_description(message: Message, state: FSMContext):
+    data = await state.get_data()
+    list_id = data.get("list_id")
+    task_id = data.get("task_id")
+    new_description = message.text.strip() if message.text != "/delete" else ""
+
+    if list_id not in to_do_lists:
+        await message.answer("❌ Список задач не найден.", reply_markup=create_main_menu())
+        await state.clear()
+        return
+
+    tasks = to_do_lists[list_id].get("tasks", [])
+    if 0 <= task_id < len(tasks):
+        to_do_lists[list_id]["tasks"][task_id]["description"] = new_description
+        save_tasks()
+        await message.answer("✅ Описание задачи обновлено.", reply_markup=create_main_menu())
+    else:
+        await message.answer("❌ Задача не найдена.", reply_markup=create_main_menu())
     await state.clear()
 
 
