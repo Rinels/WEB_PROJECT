@@ -82,11 +82,17 @@ def create_main_menu():
 
 def create_task_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏ Редактировать название", callback_data=f"edit_{list_id}_{task_id}")],
-        [InlineKeyboardButton(text="📝 Редактировать описание", callback_data=f"edit_desc_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="✏ Редактировать", callback_data=f"edit_menu_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="⏰ Установить напоминание", callback_data=f"remind_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="🔄 Изменить статус", callback_data=f"status_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")]
+    ])
+
+def create_edit_menu_keyboard(list_id, task_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Редактировать название", callback_data=f"edit_name_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="📝 Редактировать описание", callback_data=f"edit_desc_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="↩ Назад", callback_data=f"back_{list_id}_{task_id}")]
     ])
 
 def create_status_keyboard(list_id, task_id):
@@ -179,21 +185,56 @@ async def list_tasks(message: Message):
         )
 
 
-@dp.callback_query(lambda call: call.data.startswith("edit_"))
-async def edit_task(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(lambda call: call.data.startswith("edit_menu_"))
+async def edit_task_menu(callback: types.CallbackQuery):
     parts = callback.data.split("_")
+    if len(parts) == 4:
+        _, _, list_id, task_id = parts
+        await callback.message.answer("Выберите, что хотите изменить:",
+                                      reply_markup=create_edit_menu_keyboard(list_id, task_id))
 
-    if len(parts) == 3:
-        _, list_id, task_id = parts
+
+@dp.callback_query(lambda call: call.data.startswith("edit_name_"))
+async def edit_task_name(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    if len(parts) == 4:
+        _, _, list_id, task_id = parts
         await state.set_state(ToDoStates.editing_task)
         await state.update_data(list_id=list_id, task_id=int(task_id))
         await callback.message.answer("Введите новое название задачи:")
 
-    elif len(parts) == 4 and parts[1] == "desc":
+
+@dp.callback_query(lambda call: call.data.startswith("edit_desc_"))
+async def edit_task_description(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    if len(parts) == 4:
         _, _, list_id, task_id = parts
         await state.set_state(ToDoStates.editing_description)
         await state.update_data(list_id=list_id, task_id=int(task_id))
         await callback.message.answer("Введите новое описание задачи (или /delete чтобы удалить описание):")
+
+
+@dp.callback_query(lambda call: call.data.startswith("back_"))
+async def back_to_task(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    if len(parts) == 3:
+        _, list_id, task_id = parts
+        try:
+            task = to_do_lists[list_id]["tasks"][int(task_id)]
+            task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
+            if task["reminder_time"]:
+                task_text += f"\nНапоминание: {task['reminder_time']}"
+            if task["reminded"]:
+                task_text += " ✅"
+            if task['description']:
+                task_text += f"\nОписание: {task['description']}"
+
+            await callback.message.answer(
+                task_text,
+                reply_markup=create_task_keyboard(list_id, int(task_id))
+            )
+        except (KeyError, IndexError, ValueError):
+            await callback.answer("❌ Задача не найдена")
 
 
 @dp.message(ToDoStates.editing_task)
