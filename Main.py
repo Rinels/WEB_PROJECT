@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = "API_TOKEN"
+API_TOKEN = "7989310634:AAEUN8LPqDYQaaQyzvkeo75p-XeJ29VwfjQ"
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -300,8 +300,12 @@ async def process_reminder_time(message: Message, state: FSMContext):
 
     try:
         reminder_time = datetime.strptime(message.text.strip(), "%d-%m-%Y %H:%M")
+        if reminder_time <= datetime.now():
+            await message.answer("❌ Напоминание должно быть установлено на будущее время. Попробуйте снова:")
+            return
+
     except ValueError:
-        await message.answer("❌ Некорректный формат времени. Попробуйте снова:")
+        await message.answer("❌ Некорректный формат времени. Используйте формат ДД-ММ-ГГГГ ЧЧ:ММ\nПопробуйте снова:")
         return
 
     task = to_do_lists[list_id]["tasks"][task_id]
@@ -309,7 +313,11 @@ async def process_reminder_time(message: Message, state: FSMContext):
     task["reminded"] = False
     save_tasks()
 
-    await message.answer(f"✅ Напоминание для задачи \"{task['task']}\" установлено на {reminder_time}.", reply_markup=create_main_menu())
+    formatted_time = reminder_time.strftime("%d.%m.%Y в %H:%M")
+    await message.answer(
+        f"✅ Напоминание для задачи \"{task['task']}\" установлено на {formatted_time}.",
+        reply_markup=create_main_menu()
+    )
     await state.clear()
 
 
