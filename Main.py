@@ -9,12 +9,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = "7989310634:AAFnp-4yzCSUAfPCnrIPQEJ8RzbGLywxqYs"
+API_TOKEN = "API TOKEN"
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 class ToDoStates(StatesGroup):
-    adding_task = State()
+    adding_title = State()
+    adding_description = State()
     editing_task = State()
     changing_status = State()
     deleting_task = State()
@@ -71,8 +72,9 @@ def save_tasks():
 def create_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Добавить задачу"), KeyboardButton(text="📋 Показать задачи")],
-            [KeyboardButton(text="✅ Выполненные задачи"), KeyboardButton(text="❌ Удалить задачу")]
+            [KeyboardButton(text="➕ Добавить")],
+            [KeyboardButton(text="📋 Список")],
+            [KeyboardButton(text="✅ Выполненные")]
         ],
         resize_keyboard=True
     )
@@ -80,6 +82,7 @@ def create_main_menu():
 def create_task_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏ Редактировать", callback_data=f"edit_{list_id}_{task_id}")],
+        [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="⏰ Установить напоминание", callback_data=f"remind_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="🔄 Изменить статус", callback_data=f"status_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="✅ Завершить", callback_data=f"done_{list_id}_{task_id}")]
@@ -102,24 +105,32 @@ async def cmd_start(message: Message):
         save_tasks()
     await message.answer("Привет! Я бот для управления задачами. Выберите действие из меню:", reply_markup=create_main_menu())
 
-@dp.message(lambda msg: msg.text == "➕ Добавить задачу")
-async def add_task(message: Message, state: FSMContext):
-    await message.answer("Введите текст задачи:")
-    await state.set_state(ToDoStates.adding_task)
 
-@dp.message(ToDoStates.adding_task)
-async def process_add_task(message: Message, state: FSMContext):
+@dp.message(lambda msg: msg.text == "➕ Добавить")
+async def add_task(message: Message, state: FSMContext):
+    await message.answer("Введите название задачи:")
+    await state.set_state(ToDoStates.adding_title)
+
+
+@dp.message(ToDoStates.adding_title)
+async def process_task_title(message: Message, state: FSMContext):
+    await state.update_data(title=message.text.strip())
+    await message.answer("Теперь введите описание задачи (или нажмите /skip чтобы пропустить):")
+    await state.set_state(ToDoStates.adding_description)
+
+
+@dp.message(ToDoStates.adding_description)
+async def process_task_description(message: Message, state: FSMContext):
+    user_data = await state.get_data()
+    title = user_data.get('title')
+    description = message.text.strip() if message.text != "/skip" else ""
+
     user_id = str(message.from_user.id)
     list_id = user_to_list.get(user_id)
-    if not list_id:
-        await message.answer("❌ Ваш список задач не найден. Перезапустите бота командой /start.", reply_markup=create_main_menu())
-        await state.clear()
-        return
 
-    task_text = message.text.strip()
-    await state.update_data(task_text=task_text)
     task = {
-        "task": task_text,
+        "task": title,
+        "description": description,  # Добавляем описание
         "status": STATUS_OPTIONS["not_started"],
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "reminder_time": None,
@@ -128,33 +139,43 @@ async def process_add_task(message: Message, state: FSMContext):
 
     to_do_lists[list_id]["tasks"].append(task)
     save_tasks()
-    await message.answer(f"✅ Задача добавлена: {task['task']}.", reply_markup=create_main_menu())
+    await message.answer(f"✅ Задача добавлена: {title}", reply_markup=create_main_menu())
     await state.clear()
 
-@dp.message(lambda msg: msg.text == "📋 Показать задачи")
+@dp.message(lambda msg: msg.text == "📋 Список")
 async def list_tasks(message: Message):
     user_id = str(message.from_user.id)
     list_id = user_to_list.get(user_id)
-    if not list_id or list_id not in to_do_lists:
-        await message.answer("📭 Список задач пуст или не найден. Добавьте новую задачу.", reply_markup=create_main_menu())
+    if not to_do_lists[list_id]["tasks"]:
+        await message.answer("📭 Список пуст или не найден. Добавьте новую задачу.", reply_markup=create_main_menu())
         return
 
     tasks = to_do_lists[list_id].get("tasks", [])
-    if not tasks:
-        await message.answer("📭 Список задач пуст.")
-        return
-
     for idx, task in enumerate(tasks):
+        task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
+
+        if task["reminder_time"]:
+            task_text += f"\nНапоминание: {task["reminder_time"]}"
+
+        if task["reminded"]:
+            task_text += " ✅"
+
+        if task['description']:
+            task_text += f"\nОписание: {task['description']}"
+
         await message.answer(
-            f"📌 {idx + 1}. {task['task']}\nСтатус: {task['status']}\n🕒 {task['timestamp']}",
+            task_text,
             reply_markup=create_task_keyboard(list_id, idx)
         )
 
 @dp.callback_query(lambda call: call.data.startswith("edit_"))
 async def edit_task(callback: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback.data.split("_")
+
     await state.set_state(ToDoStates.editing_task)
+
     await state.update_data(list_id=list_id, task_id=int(task_id))
+
     await callback.message.answer("Введите новый текст задачи:")
 
 @dp.message(ToDoStates.editing_task)
@@ -173,6 +194,7 @@ async def process_edit_task(message: Message, state: FSMContext):
     if 0 <= task_id < len(tasks):
         to_do_lists[list_id]["tasks"][task_id]["task"] = new_task_text
         save_tasks()
+
         await message.answer("✅ Задача обновлена.", reply_markup=create_main_menu())
     else:
         await message.answer("❌ Задача не найдена. Попробуйте снова.", reply_markup=create_main_menu())
@@ -181,8 +203,11 @@ async def process_edit_task(message: Message, state: FSMContext):
 @dp.callback_query(lambda call: call.data.startswith("remind_"))
 async def set_reminder(callback_query: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback_query.data.split("_")
+
     await state.update_data(list_id=list_id, task_id=int(task_id))
+
     await callback_query.message.answer("Введите время для напоминания в формате `DD-MM-YYYY HH:MM`:")
+
     await state.set_state(ToDoStates.setting_reminder)
 
 @dp.message(ToDoStates.setting_reminder)
@@ -214,7 +239,9 @@ async def change_status(callback: types.CallbackQuery, state: FSMContext):
         tasks = to_do_lists[list_id].get("tasks", [])
         if 0 <= task_id < len(tasks):
             await state.set_state(ToDoStates.changing_status)
+
             await state.update_data(list_id=list_id, task_id=task_id)
+
             await callback.message.answer("Выберите новый статус задачи:", reply_markup=create_status_keyboard(list_id, task_id))
         else:
             await callback.message.answer("❌ Задача не найдена.")
@@ -231,10 +258,9 @@ async def set_status(callback: types.CallbackQuery):
         if 0 <= task_id < len(tasks):
             to_do_lists[list_id]["tasks"][task_id]["status"] = STATUS_OPTIONS[status_key]
             save_tasks()
+
             await callback.message.edit_text(
-                f"📌 {to_do_lists[list_id]['tasks'][task_id]['task']}\nСтатус: {STATUS_OPTIONS[status_key]}\n🕒 {to_do_lists[list_id]['tasks'][task_id]['timestamp']}",
-                reply_markup=create_task_keyboard(list_id, task_id)
-            )
+                f"📌 {to_do_lists[list_id]['tasks'][task_id]['task']}\nСтатус: {STATUS_OPTIONS[status_key]}")
         else:
             await callback.message.answer("❌ Задача не найдена.")
     else:
@@ -253,13 +279,14 @@ async def mark_done(callback: types.CallbackQuery):
             task["status"] = STATUS_OPTIONS["completed"]
             to_do_lists[list_id]["completed"].append(task)
             save_tasks()
+
             await callback.message.edit_text(f"✅ Задача завершена: {task['task']}")
         else:
             await callback.message.answer("❌ Задача не найдена.")
     else:
         await callback.message.answer("❌ Список задач не найден.")
 
-@dp.message(lambda msg: msg.text == "✅ Выполненные задачи")
+@dp.message(lambda msg: msg.text == "✅ Выполненные")
 async def show_completed(message: Message):
     user_id = str(message.from_user.id)
     list_id = user_to_list.get(user_id)
@@ -268,39 +295,50 @@ async def show_completed(message: Message):
         return
 
     completed_tasks = to_do_lists[list_id].get("completed", [])
+
     if not completed_tasks:
         await message.answer("📭 В этом списке нет выполненных задач.")
         return
 
     for idx, task in enumerate(completed_tasks):
-        await message.answer(f"✅ {idx + 1}. {task['task']}\n🕒 Завершено: {task['completed_at']}")
+        task_text = f"✅ {idx + 1}. {task['task']}"
 
-@dp.message(lambda msg: msg.text == "❌ Удалить задачу")
-async def delete_task(message: Message, state: FSMContext):
-    await message.answer("Введите номер задачи, которую хотите удалить:")
-    await state.set_state(ToDoStates.deleting_task)
+        if task['description']:
+            task_text += f"\nОписание: {task['description']}"
 
-@dp.message(ToDoStates.deleting_task)
-async def process_delete_task(message: Message, state: FSMContext):
-    user_id = str(message.from_user.id)
-    list_id = user_to_list.get(user_id)
-    if not list_id or list_id not in to_do_lists:
-        await message.answer("❌ Список задач не найден. Пожалуйста, перезапустите бота командой /start.", reply_markup=create_main_menu())
-        await state.clear()
-        return
+        task_text += f"\n🕒 Завершено: {task['completed_at']}"
 
-    try:
-        task_id = int(message.text.strip()) - 1
+        await message.answer(task_text)
+
+
+@dp.callback_query(lambda call: call.data.startswith("delete_task_"))
+async def confirm_delete_task(callback: types.CallbackQuery):
+    _, _, list_id, task_id = callback.data.split("_")
+    task_id = int(task_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_{list_id}_{task_id}"),
+         InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")]
+    ])
+    await callback.message.answer("Вы уверены, что хотите удалить эту задачу?", reply_markup=keyboard)
+
+@dp.callback_query(lambda call: call.data.startswith("confirm_delete_"))
+async def process_delete_task(callback: types.CallbackQuery):
+    _, _, list_id, task_id = callback.data.split("_")
+    task_id = int(task_id)
+    if list_id in to_do_lists:
         tasks = to_do_lists[list_id].get("tasks", [])
         if 0 <= task_id < len(tasks):
-            task = tasks.pop(task_id)
+            deleted_task = tasks.pop(task_id)
             save_tasks()
-            await message.answer(f"❌ Задача удалена: {task['task']}", reply_markup=create_main_menu())
+            await callback.message.edit_text(f"❌ Задача удалена: {deleted_task['task']}")
         else:
-            await message.answer("❌ Неверный номер задачи. Попробуйте снова.", reply_markup=create_main_menu())
-    except (IndexError, ValueError):
-        await message.answer("❌ Неверный формат ввода. Пожалуйста, введите числовой номер задачи.", reply_markup=create_main_menu())
-    await state.clear()
+            await callback.message.answer("❌ Задача не найдена.")
+    else:
+        await callback.message.answer("❌ Список задач не найден.")
+
+@dp.callback_query(lambda call: call.data == "cancel_delete")
+async def cancel_delete_task(callback: types.CallbackQuery):
+    await callback.message.edit_text("Удаление отменено.")
 
 load_tasks()
 
