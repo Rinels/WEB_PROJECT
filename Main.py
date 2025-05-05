@@ -1,4 +1,4 @@
-import json
+import sqlite3
 import uuid
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -9,9 +9,55 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime
 import asyncio
 
-API_TOKEN = "..."
+API_TOKEN = "7989310634:AAEUN8LPqDYQaaQyzvkeo75p-XeJ29VwfjQ"
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+
+def init_db():
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        list_id TEXT
+    )''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS task_lists (
+        list_id TEXT PRIMARY KEY
+    )''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS tasks (
+        task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        list_id TEXT,
+        task TEXT,
+        description TEXT,
+        status TEXT,
+        created_at TEXT,
+        reminder_time TEXT,
+        reminded INTEGER DEFAULT 0,
+        completed_at TEXT,
+        FOREIGN KEY (list_id) REFERENCES task_lists(list_id)
+    )''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS list_members (
+        list_id TEXT,
+        user_id TEXT,
+        PRIMARY KEY (list_id, user_id),
+        FOREIGN KEY (list_id) REFERENCES task_lists(list_id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id)
+    )''')
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
 
 class ToDoStates(StatesGroup):
     adding_title = State()
@@ -22,53 +68,59 @@ class ToDoStates(StatesGroup):
     deleting_task = State()
     setting_reminder = State()
 
+
 STATUS_OPTIONS = {
     "not_started": "Не начата",
     "in_progress": "В процессе",
     "completed": "Выполнена"
 }
 
-DATA_FILE = "tasks.json"
-to_do_lists = {}
-user_to_list = {}
 
 async def reminder_check():
     while True:
         now = datetime.now()
         next_check_time = None
 
-        for list_id, data in to_do_lists.items():
-            for task in data.get("tasks", []):
-                if "reminder_time" in task and task["reminder_time"]:
-                    reminder_time = datetime.strptime(task["reminder_time"], "%Y-%m-%d %H:%M:%S")
-                    if now >= reminder_time and not task.get("reminded", False):
-                        task["reminded"] = True
-                        for user_id in data["users"]:
-                            await bot.send_message(user_id, f"⏰ Напоминание: {task['task']}")
-                    elif not task.get("reminded", False) and (not next_check_time or reminder_time < next_check_time):
-                        next_check_time = reminder_time
+        conn = sqlite3.connect('ToDo.db')
+        cursor = conn.cursor()
 
-        save_tasks()
+        cursor.execute('''
+        SELECT task_id, list_id, task, reminder_time, reminded 
+        FROM tasks 
+        WHERE reminder_time IS NOT NULL AND reminded = 0
+        ''')
+
+        tasks = cursor.fetchall()
+
+        for task_id, list_id, task_text, reminder_time_str, reminded in tasks:
+            reminder_time = datetime.strptime(reminder_time_str, "%Y-%m-%d %H:%M:%S")
+
+            if now >= reminder_time and not reminded:
+                cursor.execute('''
+                UPDATE tasks SET reminded = 1 WHERE task_id = ?
+                ''', (task_id,))
+
+                cursor.execute('''
+                SELECT user_id FROM list_members WHERE list_id = ?
+                ''', (list_id,))
+
+                users = cursor.fetchall()
+
+                for (user_id,) in users:
+                    try:
+                        await bot.send_message(user_id, f"⏰ Напоминание: {task_text}")
+                    except Exception as e:
+                        print(f"Ошибка при отправке напоминания: {e}")
+
+            elif not reminded and (not next_check_time or reminder_time < next_check_time):
+                next_check_time = reminder_time
+
+        conn.commit()
+        conn.close()
+
         sleep_time = (next_check_time - datetime.now()).total_seconds() if next_check_time else 60
-        await asyncio.sleep(max(sleep_time, 1))  # Динамическая пауза
+        await asyncio.sleep(max(sleep_time, 1))
 
-def load_tasks():
-    global to_do_lists, user_to_list
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            to_do_lists = data.get("to_do_lists", {})
-            user_to_list = data.get("user_to_list", {})
-    except FileNotFoundError:
-        to_do_lists = {}
-        user_to_list = {}
-
-def save_tasks():
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump({
-            "to_do_lists": to_do_lists,
-            "user_to_list": user_to_list
-        }, file, indent=4, ensure_ascii=False)
 
 def create_main_menu():
     return ReplyKeyboardMarkup(
@@ -80,6 +132,7 @@ def create_main_menu():
         resize_keyboard=True
     )
 
+
 def create_task_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏ Редактировать", callback_data=f"edit_menu_{list_id}_{task_id}")],
@@ -88,12 +141,14 @@ def create_task_keyboard(list_id, task_id):
         [InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_task_{list_id}_{task_id}")]
     ])
 
+
 def create_edit_menu_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Редактировать название", callback_data=f"edit_name_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="📝 Редактировать описание", callback_data=f"edit_desc_{list_id}_{task_id}")],
         [InlineKeyboardButton(text="↩ Назад", callback_data=f"back_{list_id}_{task_id}")]
     ])
+
 
 def create_status_keyboard(list_id, task_id):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -106,12 +161,26 @@ def create_status_keyboard(list_id, task_id):
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = str(message.from_user.id)
-    if user_id not in user_to_list:
+
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT list_id FROM users WHERE user_id = ?', (user_id,))
+    user_data = cursor.fetchone()
+
+    if not user_data:
         list_id = str(uuid.uuid4())
-        to_do_lists[list_id] = {"tasks": [], "completed": [], "users": [user_id]}
-        user_to_list[user_id] = list_id
-        save_tasks()
-    await message.answer("Привет! Я бот для управления задачами. Выберите действие из меню:", reply_markup=create_main_menu())
+
+        cursor.execute('INSERT INTO task_lists (list_id) VALUES (?)', (list_id,))
+        cursor.execute('INSERT INTO users (user_id, list_id) VALUES (?, ?)', (user_id, list_id))
+        cursor.execute('INSERT INTO list_members (list_id, user_id) VALUES (?, ?)', (list_id, user_id))
+
+        conn.commit()
+
+    conn.close()
+
+    await message.answer("Привет! Я бот для управления задачами. Выберите действие из меню:",
+                         reply_markup=create_main_menu())
 
 
 @dp.message(lambda msg: msg.text == "➕ Добавить")
@@ -122,6 +191,11 @@ async def add_task(message: Message, state: FSMContext):
 
 @dp.message(ToDoStates.adding_title)
 async def process_task_title(message: Message, state: FSMContext):
+    if message.text.strip() in ["➕ Добавить", "📋 Список", "✅ Выполненные"]:
+        await message.answer(
+            "Текст не может совпадать с текстом кнопки. Пожалуйста, введите другое название:")
+        return
+
     await state.update_data(title=message.text.strip())
     await message.answer("Теперь введите описание задачи (или нажмите /skip чтобы пропустить):")
     await state.set_state(ToDoStates.adding_description)
@@ -129,24 +203,31 @@ async def process_task_title(message: Message, state: FSMContext):
 
 @dp.message(ToDoStates.adding_description)
 async def process_task_description(message: Message, state: FSMContext):
+    if message.text.strip() in ["➕ Добавить", "📋 Список", "✅ Выполненные"]:
+        await message.answer(
+            "Текст не может совпадать с текстом кнопки. Пожалуйста, введите другое название:")
+        return
+
     user_data = await state.get_data()
     title = user_data.get('title')
     description = message.text.strip() if message.text != "/skip" else ""
 
     user_id = str(message.from_user.id)
-    list_id = user_to_list.get(user_id)
 
-    task = {
-        "task": title,
-        "description": description,  # Добавляем описание
-        "status": STATUS_OPTIONS["not_started"],
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "reminder_time": None,
-        "reminded": False
-    }
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
 
-    to_do_lists[list_id]["tasks"].append(task)
-    save_tasks()
+    cursor.execute('SELECT list_id FROM users WHERE user_id = ?', (user_id,))
+    list_id = cursor.fetchone()[0]
+
+    cursor.execute('''
+    INSERT INTO tasks (list_id, task, description, status, created_at, reminder_time, reminded)
+    VALUES (?, ?, ?, ?, ?, NULL, 0)
+    ''', (list_id, title, description, STATUS_OPTIONS["not_started"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+    conn.commit()
+    conn.close()
+
     await message.answer(f"✅ Задача добавлена: {title}", reply_markup=create_main_menu())
     await state.clear()
 
@@ -154,35 +235,55 @@ async def process_task_description(message: Message, state: FSMContext):
 @dp.message(lambda msg: msg.text == "📋 Список")
 async def list_tasks(message: Message):
     user_id = str(message.from_user.id)
-    list_id = user_to_list.get(user_id)
-    if list_id not in to_do_lists or not to_do_lists[list_id]["tasks"]:
+
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT list_id FROM users WHERE user_id = ?', (user_id,))
+    user_data = cursor.fetchone()
+
+    if not user_data:
         await message.answer("📭 Список пуст или не найден. Добавьте новую задачу.", reply_markup=create_main_menu())
+        conn.close()
         return
 
-    tasks = to_do_lists[list_id].get("tasks", [])
+    list_id = user_data[0]
 
-    sorted_tasks = sorted(tasks, key=lambda x: (
-        0 if x["status"] == STATUS_OPTIONS["in_progress"] else 1
-    ))
+    cursor.execute('''
+    SELECT task_id, task, description, status, reminder_time, reminded 
+    FROM tasks 
+    WHERE list_id = ? AND status != ? 
+    ORDER BY 
+        CASE WHEN status = ? THEN 0 ELSE 1 END,
+        created_at
+    ''', (list_id, STATUS_OPTIONS["completed"], STATUS_OPTIONS["in_progress"]))
 
-    for task in sorted_tasks:
-        original_idx = tasks.index(task)
+    tasks = cursor.fetchall()
 
-        task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
+    if not tasks:
+        await message.answer("📭 Список пуст. Добавьте новую задачу.", reply_markup=create_main_menu())
+        conn.close()
+        return
 
-        if task["reminder_time"]:
-            task_text += f"\nНапоминание: {task['reminder_time']}"
+    for task in tasks:
+        task_id, task_text, description, status, reminder_time, reminded = task
 
-        if task["reminded"]:
-            task_text += " ✅"
+        message_text = f"📌 {task_text}\nСтатус: {status}"
 
-        if task['description']:
-            task_text += f"\nОписание: {task['description']}"
+        if reminder_time:
+            message_text += f"\nНапоминание: {reminder_time}"
+            if reminded:
+                message_text += " ✅"
+
+        if description:
+            message_text += f"\nОписание: {description}"
 
         await message.answer(
-            task_text,
-            reply_markup=create_task_keyboard(list_id, original_idx)
+            message_text,
+            reply_markup=create_task_keyboard(list_id, task_id)
         )
+
+    conn.close()
 
 
 @dp.callback_query(lambda call: call.data.startswith("edit_menu_"))
@@ -200,7 +301,7 @@ async def edit_task_name(callback: types.CallbackQuery, state: FSMContext):
     if len(parts) == 4:
         _, _, list_id, task_id = parts
         await state.set_state(ToDoStates.editing_task)
-        await state.update_data(list_id=list_id, task_id=int(task_id))
+        await state.update_data(list_id=list_id, task_id=task_id)
         await callback.message.answer("Введите новое название задачи:")
 
 
@@ -210,7 +311,7 @@ async def edit_task_description(callback: types.CallbackQuery, state: FSMContext
     if len(parts) == 4:
         _, _, list_id, task_id = parts
         await state.set_state(ToDoStates.editing_description)
-        await state.update_data(list_id=list_id, task_id=int(task_id))
+        await state.update_data(list_id=list_id, task_id=task_id)
         await callback.message.answer("Введите новое описание задачи (или /delete чтобы удалить описание):")
 
 
@@ -219,21 +320,36 @@ async def back_to_task(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     if len(parts) == 3:
         _, list_id, task_id = parts
-        try:
-            task = to_do_lists[list_id]["tasks"][int(task_id)]
-            task_text = f"📌 {task['task']}\nСтатус: {task['status']}"
-            if task["reminder_time"]:
-                task_text += f"\nНапоминание: {task['reminder_time']}"
-            if task["reminded"]:
-                task_text += " ✅"
-            if task['description']:
-                task_text += f"\nОписание: {task['description']}"
+
+        conn = sqlite3.connect('ToDo.db')
+        cursor = conn.cursor()
+
+        cursor.execute('''
+        SELECT task, description, status, reminder_time, reminded 
+        FROM tasks 
+        WHERE task_id = ? AND list_id = ?
+        ''', (task_id, list_id))
+
+        task = cursor.fetchone()
+        conn.close()
+
+        if task:
+            task_text, description, status, reminder_time, reminded = task
+            message_text = f"📌 {task_text}\nСтатус: {status}"
+
+            if reminder_time:
+                message_text += f"\nНапоминание: {reminder_time}"
+                if reminded:
+                    message_text += " ✅"
+
+            if description:
+                message_text += f"\nОписание: {description}"
 
             await callback.message.answer(
-                task_text,
-                reply_markup=create_task_keyboard(list_id, int(task_id))
+                message_text,
+                reply_markup=create_task_keyboard(list_id, task_id)
             )
-        except (KeyError, IndexError, ValueError):
+        else:
             await callback.answer("❌ Задача не найдена")
 
 
@@ -244,18 +360,19 @@ async def process_edit_task(message: Message, state: FSMContext):
     task_id = data.get("task_id")
     new_task_text = message.text.strip()
 
-    if list_id not in to_do_lists:
-        await message.answer("❌ Список задач не найден.", reply_markup=create_main_menu())
-        await state.clear()
-        return
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
 
-    tasks = to_do_lists[list_id].get("tasks", [])
-    if 0 <= task_id < len(tasks):
-        to_do_lists[list_id]["tasks"][task_id]["task"] = new_task_text
-        save_tasks()
-        await message.answer("✅ Название задачи обновлено.", reply_markup=create_main_menu())
-    else:
-        await message.answer("❌ Задача не найдена.", reply_markup=create_main_menu())
+    cursor.execute('''
+    UPDATE tasks 
+    SET task = ? 
+    WHERE task_id = ? AND list_id = ?
+    ''', (new_task_text, task_id, list_id))
+
+    conn.commit()
+    conn.close()
+
+    await message.answer("✅ Название задачи обновлено.", reply_markup=create_main_menu())
     await state.clear()
 
 
@@ -266,18 +383,19 @@ async def process_edit_description(message: Message, state: FSMContext):
     task_id = data.get("task_id")
     new_description = message.text.strip() if message.text != "/delete" else ""
 
-    if list_id not in to_do_lists:
-        await message.answer("❌ Список задач не найден.", reply_markup=create_main_menu())
-        await state.clear()
-        return
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
 
-    tasks = to_do_lists[list_id].get("tasks", [])
-    if 0 <= task_id < len(tasks):
-        to_do_lists[list_id]["tasks"][task_id]["description"] = new_description
-        save_tasks()
-        await message.answer("✅ Описание задачи обновлено.", reply_markup=create_main_menu())
-    else:
-        await message.answer("❌ Задача не найдена.", reply_markup=create_main_menu())
+    cursor.execute('''
+    UPDATE tasks 
+    SET description = ? 
+    WHERE task_id = ? AND list_id = ?
+    ''', (new_description, task_id, list_id))
+
+    conn.commit()
+    conn.close()
+
+    await message.answer("✅ Описание задачи обновлено.", reply_markup=create_main_menu())
     await state.clear()
 
 
@@ -285,10 +403,8 @@ async def process_edit_description(message: Message, state: FSMContext):
 async def set_reminder(callback_query: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback_query.data.split("_")
 
-    await state.update_data(list_id=list_id, task_id=int(task_id))
-
+    await state.update_data(list_id=list_id, task_id=task_id)
     await callback_query.message.answer("Введите время для напоминания в формате `DD-MM-YYYY HH:MM`:")
-
     await state.set_state(ToDoStates.setting_reminder)
 
 
@@ -304,55 +420,75 @@ async def process_reminder_time(message: Message, state: FSMContext):
             await message.answer("❌ Напоминание должно быть установлено на будущее время. Попробуйте снова:")
             return
 
+        reminder_time_str = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        conn = sqlite3.connect('ToDo.db')
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT task FROM tasks WHERE task_id = ?', (task_id,))
+        task_text = cursor.fetchone()[0]
+
+        cursor.execute('''
+        UPDATE tasks 
+        SET reminder_time = ?, reminded = 0 
+        WHERE task_id = ? AND list_id = ?
+        ''', (reminder_time_str, task_id, list_id))
+
+        conn.commit()
+        conn.close()
+
+        formatted_time = reminder_time.strftime("%d.%m.%Y в %H:%M")
+        await message.answer(
+            f"✅ Напоминание для задачи \"{task_text}\" установлено на {formatted_time}.",
+            reply_markup=create_main_menu()
+        )
+        await state.clear()
+
     except ValueError:
         await message.answer("❌ Некорректный формат времени. Используйте формат ДД-ММ-ГГГГ ЧЧ:ММ\nПопробуйте снова:")
-        return
-
-    task = to_do_lists[list_id]["tasks"][task_id]
-    task["reminder_time"] = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
-    task["reminded"] = False
-    save_tasks()
-
-    formatted_time = reminder_time.strftime("%d.%m.%Y в %H:%M")
-    await message.answer(
-        f"✅ Напоминание для задачи \"{task['task']}\" установлено на {formatted_time}.",
-        reply_markup=create_main_menu()
-    )
-    await state.clear()
 
 
 @dp.callback_query(lambda call: call.data.startswith("status_"))
 async def change_status(callback: types.CallbackQuery, state: FSMContext):
     _, list_id, task_id = callback.data.split("_")
-    task_id = int(task_id)
 
-    if list_id in to_do_lists:
-        tasks = to_do_lists[list_id].get("tasks", [])
-        if 0 <= task_id < len(tasks):
-            await state.set_state(ToDoStates.changing_status)
-
-            await state.update_data(list_id=list_id, task_id=task_id)
-
-            await callback.message.answer("Выберите новый статус задачи:", reply_markup=create_status_keyboard(list_id, task_id))
-        else:
-            await callback.message.answer("❌ Задача не найдена.")
-    else:
-        await callback.message.answer("❌ Список задач не найден.")
+    await state.update_data(list_id=list_id, task_id=task_id)
+    await callback.message.answer("Выберите новый статус задачи:",
+                                  reply_markup=create_status_keyboard(list_id, task_id))
+    await state.set_state(ToDoStates.changing_status)
 
 
 @dp.callback_query(lambda call: call.data.startswith("set_status_"))
 async def set_status(callback: types.CallbackQuery):
     _, _, list_id, task_id, status_key = callback.data.split("_", 4)
-    task_id = int(task_id)
 
-    if list_id in to_do_lists and status_key in STATUS_OPTIONS:
-        tasks = to_do_lists[list_id].get("tasks", [])
-        if 0 <= task_id < len(tasks):
-            to_do_lists[list_id]["tasks"][task_id]["status"] = STATUS_OPTIONS[status_key]
-            save_tasks()
+    if status_key in STATUS_OPTIONS:
+        new_status = STATUS_OPTIONS[status_key]
 
-            await callback.message.edit_text(
-                f"📌 {to_do_lists[list_id]['tasks'][task_id]['task']}\nСтатус: {STATUS_OPTIONS[status_key]}")
+        conn = sqlite3.connect('ToDo.db')
+        cursor = conn.cursor()
+
+        cursor.execute('''
+        UPDATE tasks 
+        SET status = ? 
+        WHERE task_id = ? AND list_id = ?
+        ''', (new_status, task_id, list_id))
+
+        cursor.execute('''
+        SELECT task, description, status, reminder_time, reminded 
+        FROM tasks 
+        WHERE task_id = ? AND list_id = ?
+        ''', (task_id, list_id))
+
+        task = cursor.fetchone()
+        conn.commit()
+        conn.close()
+
+        if task:
+            task_text, description, status, reminder_time, reminded = task
+            message_text = f"📌 {task_text}\nСтатус: {status}"
+
+            await callback.message.edit_text(message_text)
         else:
             await callback.message.answer("❌ Задача не найдена.")
     else:
@@ -362,7 +498,6 @@ async def set_status(callback: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data.startswith("done_"))
 async def mark_done(callback: types.CallbackQuery):
     _, list_id, task_id = callback.data.split("_")
-    task_id = int(task_id)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Да", callback_data=f"confirm_done_{list_id}_{task_id}"),
@@ -374,22 +509,23 @@ async def mark_done(callback: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data.startswith("confirm_done_"))
 async def process_confirm_done(callback: types.CallbackQuery):
     _, _, list_id, task_id = callback.data.split("_")
-    task_id = int(task_id)
 
-    if list_id in to_do_lists:
-        tasks = to_do_lists[list_id].get("tasks", [])
-        if 0 <= task_id < len(tasks):
-            task = tasks.pop(task_id)
-            task["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            task["status"] = STATUS_OPTIONS["completed"]
-            to_do_lists[list_id]["completed"].append(task)
-            save_tasks()
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
 
-            await callback.message.edit_text(f"✅ Задача завершена: {task['task']}")
-        else:
-            await callback.answer("❌ Задача не найдена.")
-    else:
-        await callback.answer("❌ Список задач не найден.")
+    cursor.execute('''
+    UPDATE tasks 
+    SET status = ?, completed_at = ? 
+    WHERE task_id = ? AND list_id = ?
+    ''', (STATUS_OPTIONS["completed"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task_id, list_id))
+
+    cursor.execute('SELECT task FROM tasks WHERE task_id = ?', (task_id,))
+    task_text = cursor.fetchone()[0]
+
+    conn.commit()
+    conn.close()
+
+    await callback.message.edit_text(f"✅ Задача завершена: {task_text}")
 
 
 @dp.callback_query(lambda call: call.data.startswith("cancel_done_"))
@@ -400,32 +536,50 @@ async def process_cancel_done(callback: types.CallbackQuery):
 @dp.message(lambda msg: msg.text == "✅ Выполненные")
 async def show_completed(message: Message):
     user_id = str(message.from_user.id)
-    list_id = user_to_list.get(user_id)
-    if not list_id or list_id not in to_do_lists:
+
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT list_id FROM users WHERE user_id = ?', (user_id,))
+    user_data = cursor.fetchone()
+
+    if not user_data:
         await message.answer("📭 Нет выполненных задач или список задач не найден.", reply_markup=create_main_menu())
+        conn.close()
         return
 
-    completed_tasks = to_do_lists[list_id].get("completed", [])
+    list_id = user_data[0]
+
+    cursor.execute('''
+    SELECT task, description, completed_at 
+    FROM tasks 
+    WHERE list_id = ? AND status = ? 
+    ORDER BY completed_at DESC
+    ''', (list_id, STATUS_OPTIONS["completed"]))
+
+    completed_tasks = cursor.fetchall()
+    conn.close()
 
     if not completed_tasks:
         await message.answer("📭 В этом списке нет выполненных задач.")
         return
 
-    for idx, task in enumerate(completed_tasks):
-        task_text = f"✅ {idx + 1}. {task['task']}"
+    for idx, task in enumerate(completed_tasks, 1):
+        task_text, description, completed_at = task
+        message_text = f"✅ {idx}. {task_text}"
 
-        if task['description']:
-            task_text += f"\nОписание: {task['description']}"
+        if description:
+            message_text += f"\nОписание: {description}"
 
-        task_text += f"\n🕒 Завершено: {task['completed_at']}"
+        message_text += f"\n🕒 Завершено: {completed_at}"
 
-        await message.answer(task_text)
+        await message.answer(message_text)
 
 
 @dp.callback_query(lambda call: call.data.startswith("delete_task_"))
 async def confirm_delete_task(callback: types.CallbackQuery):
     _, _, list_id, task_id = callback.data.split("_")
-    task_id = int(task_id)
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Да", callback_data=f"confirm_delete_{list_id}_{task_id}"),
          InlineKeyboardButton(text="Нет", callback_data="cancel_delete")]
@@ -436,32 +590,33 @@ async def confirm_delete_task(callback: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data.startswith("confirm_delete_"))
 async def process_delete_task(callback: types.CallbackQuery):
     _, _, list_id, task_id = callback.data.split("_")
-    task_id = int(task_id)
-    if list_id in to_do_lists:
-        tasks = to_do_lists[list_id].get("tasks", [])
-        if 0 <= task_id < len(tasks):
-            deleted_task = tasks.pop(task_id)
-            save_tasks()
-            await callback.message.edit_text(f"❌ Задача удалена: {deleted_task['task']}")
-        else:
-            await callback.message.answer("❌ Задача не найдена.")
-    else:
-        await callback.message.answer("❌ Список задач не найден.")
+
+    conn = sqlite3.connect('ToDo.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT task FROM tasks WHERE task_id = ?', (task_id,))
+    task_text = cursor.fetchone()[0]
+
+    cursor.execute('DELETE FROM tasks WHERE task_id = ? AND list_id = ?', (task_id, list_id))
+
+    conn.commit()
+    conn.close()
+
+    await callback.message.edit_text(f"❌ Задача удалена: {task_text}")
 
 
 @dp.callback_query(lambda call: call.data == "cancel_delete")
 async def cancel_delete_task(callback: types.CallbackQuery):
     await callback.message.edit_text("Удаление отменено.")
 
-load_tasks()
 
 async def main():
     asyncio.create_task(reminder_check())
     try:
         await dp.start_polling(bot)
     finally:
-        save_tasks()
         await bot.session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
