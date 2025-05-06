@@ -87,8 +87,10 @@ async def reminder_check():
         cursor.execute('''
         SELECT task_id, list_id, task, reminder_time, reminded 
         FROM tasks 
-        WHERE reminder_time IS NOT NULL AND reminded = 0
-        ''')
+        WHERE reminder_time IS NOT NULL 
+          AND reminded = 0
+          AND status != ?
+        ''', (STATUS_OPTIONS["completed"],))
 
         tasks = cursor.fetchall()
 
