@@ -227,10 +227,19 @@ async def process_task_description(message: Message, state: FSMContext):
     VALUES (?, ?, ?, ?, ?, NULL, 0)
     ''', (list_id, title, description, STATUS_OPTIONS["not_started"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
+    task_id = cursor.lastrowid
+
     conn.commit()
     conn.close()
 
-    await message.answer(f"✅ Задача добавлена: {title}", reply_markup=create_main_menu())
+    message_text = f"✅ Задача добавлена:\n📌 {title}\nСтатус: {STATUS_OPTIONS['not_started']}"
+    if description:
+        message_text += f"\nОписание: {description}"
+
+    await message.answer(
+        message_text,
+        reply_markup=create_task_keyboard(list_id, task_id)
+    )
     await state.clear()
 
 
